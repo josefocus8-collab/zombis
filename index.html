@@ -27,6 +27,8 @@
   @keyframes lat{from{opacity:1}to{opacity:.35}}
   #rojo{position:absolute;inset:0;box-shadow:inset 0 0 120px 60px rgba(255,0,0,.85);opacity:0;transition:opacity .35s}
   #fogonazo{position:absolute;left:50%;top:50%;width:160px;height:160px;margin:-80px 0 0 -80px;border-radius:50%;background:radial-gradient(circle,rgba(255,240,180,.95),rgba(255,160,0,0) 70%);opacity:0}
+  #borrar{position:absolute;left:50%;top:84px;transform:translateX(-50%);white-space:nowrap;font-size:26px;font-weight:900;padding:16px 30px;border:0;border-radius:18px;background:#f59e0b;color:#2a1600;box-shadow:0 6px 0 #92400e;pointer-events:auto}
+  #borrar:active{transform:translate(-50%,5px);box-shadow:0 1px 0 #92400e}
   .oculto{display:none!important}
 </style>
 </head>
@@ -43,9 +45,10 @@
   <div id="fIzq" class="flecha oculto">&#9664;</div>
   <div id="fDer" class="flecha oculto">&#9654;</div>
   <div id="mensaje"></div>
+  <button id="borrar" class="oculto">&#8617; BORRAR</button>
   <div id="pantalla">
     <h1 id="titulo">DEFIENDE LA BASE</h1>
-    <p id="texto">Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!</p>
+    <p id="texto">Los zombis saldrán por los sitios que tú elijas.<br>¡Protege la base!</p>
     <button id="boton" disabled>CARGANDO…</button>
   </div>
 </div>
@@ -79,7 +82,7 @@ const $ = id => document.getElementById(id);
 const UI = {
   pantalla: $("pantalla"), titulo: $("titulo"), texto: $("texto"), boton: $("boton"),
   hud: $("hud"), vida: $("vida"), oleada: $("oleadaTxt"), mensaje: $("mensaje"), mira: $("mira"),
-  fIzq: $("fIzq"), fDer: $("fDer"), rojo: $("rojo"), fogonazo: $("fogonazo")
+  fIzq: $("fIzq"), fDer: $("fDer"), rojo: $("rojo"), fogonazo: $("fogonazo"), borrar: $("borrar")
 };
 
 // ---------- Matemáticas (matrices 4x4 por columnas) ----------
@@ -200,7 +203,7 @@ function iniciarAudio() {
   if (audio) { audio.resume(); return; }
   try {
     audio = new (window.AudioContext || window.webkitAudioContext)();
-    ruidoBuf = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    ruidoBuf = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
     const ch = ruidoBuf.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
     // zumbido de fondo inquietante
     const g = audio.createGain(); g.gain.value = 0.04; g.connect(audio.destination);
@@ -243,6 +246,15 @@ const SND = {
     const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 300;
     const g = audio.createGain(); env(g, t, 1.0, 0.01, 0.6); s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + 0.7);
   },
+  explosion(grande) {
+    if (!audio) return; const t = audio.currentTime, dur = grande ? 1.8 : 1.0;
+    const s = audio.createBufferSource(); s.buffer = ruidoBuf;
+    const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.setValueAtTime(grande ? 1500 : 1200, t); f.frequency.exponentialRampToValueAtTime(90, t + dur);
+    const g = audio.createGain(); env(g, t, grande ? 1.0 : 0.8, 0.01, dur);
+    s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + dur + 0.05);
+    const o = audio.createOscillator(); o.frequency.setValueAtTime(grande ? 70 : 100, t); o.frequency.exponentialRampToValueAtTime(25, t + dur * 0.7);
+    const g2 = audio.createGain(); env(g2, t, grande ? 1.0 : 0.7, 0.01, dur * 0.8); o.connect(g2).connect(audio.destination); o.start(t); o.stop(t + dur);
+  },
   fanfarria(ok) {
     if (!audio) return; const t = audio.currentTime;
     (ok ? [523, 659, 784, 1047] : [392, 330, 262, 196]).forEach((fr, i) => {
@@ -274,7 +286,7 @@ const J = {
   estado: "inicio",          // inicio | base | paredes | preparando | jugando | entre | fin
   suelo: 0, base: null, paredes: [], salidas: [],
   vida: AJUSTES.vidaBase, oleada: 0, porSalir: 0, relojSalida: 0, jefePendiente: false,
-  zombis: [], particulas: [], temporizadores: [], ultimaSalida: -1,
+  zombis: [], particulas: [], explosiones: [], temporizadores: [], ultimaSalida: -1,
   mira: null,                // punto del suelo/pared al que apunta el centro de la pantalla
   pose: { pos: [0, 0, 0], quat: [0, 0, 0, 1] },
   t: 0, ultimoAvisoDanio: -99, eliminados: 0
@@ -298,24 +310,35 @@ function colocarBase() {
   J.base = [J.mira[0], J.suelo, J.mira[2]];
   J.estado = "paredes"; J.paredes = []; J.salidas = [];
   vibrar(80);
-  decir("¡Base colocada! Ahora apunta al pie de una pared, justo donde toca el suelo, y toca la pantalla. Pared 1 de " + AJUSTES.numParedes + ".", true);
+  decir("¡Base colocada! Ahora apunta al suelo donde quieras que salgan los zombis: junto a una pared, un árbol o un banco, y toca la pantalla. Sitio 1 de " + AJUSTES.numParedes + ".", true);
 }
 function marcarPared() {
-  if (!J.mira) { decir("Apunta al pie de la pared hasta ver el círculo rojo."); return; }
+  if (!J.mira) { decir("Apunta al suelo hasta ver el círculo rojo."); return; }
   const x = J.mira[0], z = J.mira[2];
   const dx = J.base[0] - x, dz = J.base[2] - z, d = Math.hypot(dx, dz);
-  if (d < AJUSTES.distanciaMinParedBase) { decir("Esa pared está muy cerca de la base. Apunta más lejos.", true); return; }
+  if (d < AJUSTES.distanciaMinParedBase) { decir("Ese sitio está muy cerca de la base. Apunta más lejos.", true); return; }
   const dir = [dx / d, dz / d];
   J.paredes.push([x, J.suelo, z]);
   // punto de salida: un poco HACIA DENTRO de la habitación, nunca dentro de la pared
   J.salidas.push({ x: x + dir[0] * AJUSTES.entrarDesdePared, z: z + dir[1] * AJUSTES.entrarDesdePared, dir, dist: d - AJUSTES.entrarDesdePared });
   vibrar(60);
   if (J.paredes.length < AJUSTES.numParedes) {
-    decir("Pared " + (J.paredes.length + 1) + " de " + AJUSTES.numParedes + ". Apunta a otra pared.", true);
+    decir("Sitio " + (J.paredes.length + 1) + " de " + AJUSTES.numParedes + ". Apunta a otro sitio.", true);
   } else {
     J.estado = "preparando";
-    decir("¡Cuidado! Los zombis van a salir de esas paredes. Apunta con el círculo y toca la pantalla para disparar.", true);
+    decir("¡Cuidado! Los zombis van a salir por esos sitios. Apunta con el círculo y toca la pantalla para disparar. Si te has equivocado, pulsa borrar.", true);
     despues(7, () => empezarOleada(0));
+  }
+}
+function borrarUltimo() {
+  if (!["paredes", "preparando"].includes(J.estado)) return;
+  J.temporizadores = [];
+  if (J.salidas.length > 0) {
+    J.salidas.pop(); J.paredes.pop(); J.estado = "paredes"; vibrar(40);
+    decir("Borrado. Sitio " + (J.paredes.length + 1) + " de " + AJUSTES.numParedes + ". Apunta y toca.", true);
+  } else {
+    J.base = null; J.estado = "base"; vibrar(40);
+    decir("Base borrada. Apunta al suelo y toca la pantalla para colocarla otra vez.", true);
   }
 }
 function empezarOleada(i) {
@@ -379,11 +402,27 @@ function disparar() {
   const dx = z.x - J.base[0], dz = z.z - J.base[2], L = Math.hypot(dx, dz) || 1;
   if (L < 3) { z.x += dx / L * 0.12; z.z += dz / L * 0.12; }
   salpicar([z.x, J.suelo + 1.1 * z.esc, z.z], 10, [0.45, 0.05, 0.05]);
-  if (z.vida <= 0) { z.muerto = true; z.tMuerte = 0; J.eliminados++; salpicar([z.x, J.suelo + 1.2 * z.esc, z.z], 18, [0.25, 0.4, 0.15]); }
+  if (z.vida <= 0) { z.muerto = true; z.tMuerte = 99; J.eliminados++; explotar([z.x, J.suelo + 1.0 * z.esc, z.z], z.jefe); }
   return true;
 }
 function salpicar(p, n, col) {
-  for (let i = 0; i < n; i++) J.particulas.push({ p: [...p], v: [azar(-1.2, 1.2), azar(0.5, 2.2), azar(-1.2, 1.2)], vida: azar(0.5, 0.9), col, s: azar(0.03, 0.06) });
+  for (let i = 0; i < n; i++) J.particulas.push({ p: [...p], v: [azar(-1.2, 1.2), azar(0.5, 2.2), azar(-1.2, 1.2)], vida: azar(0.5, 0.9), col, s: azar(0.03, 0.06), g: 6 });
+}
+function explotar(p, grande) {
+  const k = grande ? 2.2 : 1;
+  J.explosiones.push({ p: [...p], t: 0, k });
+  for (let i = 0; i < 24 * k; i++) { // fuego
+    const a = azar(0, Math.PI * 2), b = azar(-0.3, 1.2), v = azar(1.5, 3.5) * Math.sqrt(k);
+    J.particulas.push({ p: [...p], v: [Math.cos(a) * Math.cos(b) * v, Math.sin(b) * v, Math.sin(a) * Math.cos(b) * v], vida: azar(0.35, 0.75),
+      col: [1, 0.5, 0.1], em: Math.random() < 0.5 ? [1, 0.75, 0.2] : [1, 0.35, 0.02], s: azar(0.05, 0.1) * Math.sqrt(k), g: 2 });
+  }
+  for (let i = 0; i < 12 * k; i++) { // humo
+    J.particulas.push({ p: [p[0] + azar(-0.2, 0.2) * k, p[1] + azar(-0.2, 0.2), p[2] + azar(-0.2, 0.2) * k], v: [azar(-0.3, 0.3), azar(0.3, 0.9), azar(-0.3, 0.3)],
+      vida: azar(1.2, 2.2), col: [0.22, 0.22, 0.22], s: azar(0.08, 0.14) * k, g: -0.4, crece: true });
+  }
+  SND.explosion(grande); vibrar(grande ? [300, 80, 400] : 120);
+  UI.fogonazo.style.transition = "none"; UI.fogonazo.style.opacity = 1;
+  requestAnimationFrame(() => { UI.fogonazo.style.transition = "opacity .4s"; UI.fogonazo.style.opacity = 0; });
 }
 function danioBase(z) {
   J.vida = Math.max(0, J.vida - (z.jefe ? 3 : 1)); hud();
@@ -404,7 +443,7 @@ function ganar() {
   mostrarPantalla("¡BASE SALVADA!", "Has eliminado " + J.eliminados + " zombis.", "JUGAR OTRA VEZ", true);
 }
 function reiniciarPartida() {
-  J.zombis = []; J.particulas = []; J.temporizadores = []; J.vida = AJUSTES.vidaBase; J.eliminados = 0;
+  J.zombis = []; J.particulas = []; J.explosiones = []; J.temporizadores = []; J.vida = AJUSTES.vidaBase; J.eliminados = 0;
   UI.pantalla.classList.add("oculto"); hud();
   J.estado = "preparando"; decir("¡Otra vez! Prepárate.", true);
   despues(3, () => empezarOleada(0));
@@ -435,12 +474,14 @@ function actualizar(dt) {
     const v = z.vel * (d < 0.9 ? 1.6 : 1) * z.surgir; // embestida final
     z.x += dx / d * v * dt; z.z += dz / d * v * dt; z.fase += dt * (4 + v * 6);
     z.gru -= dt; if (z.gru <= 0) { z.gru = azar(3, 6); grunirDesde(z, false); }
-    if (d < 0.38 + 0.1 * z.esc && J.estado === "jugando") { z.muerto = true; z.tMuerte = 1.2; danioBase(z); }
+    if (d < 0.38 + 0.1 * z.esc && J.estado === "jugando") { z.muerto = true; z.tMuerte = 99; explotar([z.x, J.suelo + 0.8 * z.esc, z.z], false); danioBase(z); }
   }
   J.zombis = J.zombis.filter(z => !(z.muerto && z.tMuerte > 1.6));
 
-  for (const p of J.particulas) { p.vida -= dt; p.v[1] -= 6 * dt; for (let i = 0; i < 3; i++) p.p[i] += p.v[i] * dt; if (p.p[1] < J.suelo) { p.p[1] = J.suelo; p.v = [0, 0, 0]; } }
+  for (const p of J.particulas) { p.vida -= dt; p.v[1] -= (p.g ?? 6) * dt; if (p.crece) p.s += dt * 0.08; for (let i = 0; i < 3; i++) p.p[i] += p.v[i] * dt; if (p.p[1] < J.suelo) { p.p[1] = J.suelo; p.v = [0, 0, 0]; } }
   J.particulas = J.particulas.filter(p => p.vida > 0);
+  for (const x of J.explosiones) x.t += dt;
+  J.explosiones = J.explosiones.filter(x => x.t < 0.6);
 
   // flechas hacia el zombi vivo más cercano a la base si no se ve
   let izq = false, der = false;
@@ -455,6 +496,7 @@ function actualizar(dt) {
   UI.fIzq.classList.toggle("oculto", !izq); UI.fDer.classList.toggle("oculto", !der);
   const enJuego = ["base", "paredes", "preparando", "jugando", "entre"].includes(J.estado);
   UI.mira.classList.toggle("oculto", !enJuego);
+  UI.borrar.classList.toggle("oculto", !(J.estado === "paredes" || J.estado === "preparando"));
   UI.hud.classList.toggle("oculto", !["preparando", "jugando", "entre", "fin"].includes(J.estado));
 }
 
@@ -505,7 +547,15 @@ function dibujarEscena(P, V) {
     dibujar(MALLA.caja, M.chain(M.T(s.x, J.suelo + 0.004, s.z), M.Ry(Math.atan2(s.dir[0], s.dir[1])), M.S(0.9, 0.008, 0.18)), [0.05, 0.02, 0.02], [0.35 + 0.15 * Math.sin(J.t * 3), 0, 0]);
   }
   for (const z of J.zombis) dibujarZombi(z);
-  for (const p of J.particulas) dibujar(MALLA.caja, M.chain(M.T(...p.p), M.S(p.s, p.s, p.s)), p.col);
+  for (const p of J.particulas) dibujar(MALLA.caja, M.chain(M.T(...p.p), M.S(p.s, p.s, p.s)), p.col, p.em);
+  for (const x of J.explosiones) { // bola de fuego y onda en el suelo
+    const f = x.t / 0.6, r = x.k * 0.55 * Math.sin(Math.PI * Math.min(1, f * 1.4));
+    if (r > 0.01) {
+      dibujar(MALLA.caja, M.chain(M.T(...x.p), M.Ry(x.t * 3), M.S(r, r, r)), [0, 0, 0], [1, 0.85 - f * 0.5, 0.3 - f * 0.3]);
+      dibujar(MALLA.caja, M.chain(M.T(...x.p), M.Ry(0.78), M.Rx(0.6), M.S(r * 0.8, r * 0.8, r * 0.8)), [0, 0, 0], [1, 0.4, 0.05]);
+    }
+    dibujar(MALLA.anillo, M.chain(M.T(x.p[0], J.suelo + 0.01, x.p[2]), M.S(2 + 14 * f * x.k, 1, 2 + 14 * f * x.k)), [0, 0, 0], [1 - f, 0.4 * (1 - f), 0]);
+  }
   if (J.mira && (J.estado === "base" || J.estado === "paredes")) {
     const c = J.estado === "base" ? [0.1, 0.9, 1] : [1, 0.15, 0.1];
     dibujar(MALLA.anillo, M.chain(M.T(J.mira[0], J.mira[1] + 0.005, J.mira[2]), M.S(1.6, 1, 1.6)), [0, 0, 0], c);
@@ -519,6 +569,8 @@ function alPulsarBoton() {
   else if (J.estado === "fin") reiniciarPartida();
 }
 UI.boton.addEventListener("click", alPulsarBoton);
+UI.borrar.addEventListener("click", borrarUltimo);
+UI.borrar.addEventListener("beforexrselect", e => e.preventDefault());
 // que tocar la pantalla de botones no cuente como disparo
 UI.pantalla.addEventListener("beforexrselect", e => e.preventDefault());
 
@@ -534,7 +586,7 @@ async function comprobarSoporte() {
   if (PRUEBA) { mostrarPantalla("DEFIENDE LA BASE", "Modo prueba en ordenador.<br>Clic = disparar · flechas = girar", "EMPEZAR"); return; }
   let ok = false;
   try { ok = !!(navigator.xr && await navigator.xr.isSessionSupported("immersive-ar")); } catch (e) {}
-  if (ok) mostrarPantalla("DEFIENDE LA BASE", "Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!", "EMPEZAR");
+  if (ok) mostrarPantalla("DEFIENDE LA BASE", "Los zombis saldrán por los sitios que tú elijas.<br>¡Protege la base!", "EMPEZAR");
   else {
     UI.boton.textContent = "NO DISPONIBLE"; UI.boton.disabled = true;
     UI.texto.innerHTML = "Este móvil o navegador no permite realidad aumentada.<br><br>Ábrelo con <b>Chrome</b> en Android y comprueba que está instalada la app <b>Servicios de Google Play para RA</b>.";
@@ -558,13 +610,13 @@ async function iniciarRA() {
   fuenteHit = await sesion.requestHitTestSource({ space: visor });
   sesion.addEventListener("select", alTocar);
   sesion.addEventListener("end", () => {
-    sesion = null; fuenteHit = null; Object.assign(J, { estado: "inicio", base: null, paredes: [], salidas: [], zombis: [], particulas: [], temporizadores: [] });
+    sesion = null; fuenteHit = null; Object.assign(J, { estado: "inicio", base: null, paredes: [], salidas: [], zombis: [], particulas: [], explosiones: [], temporizadores: [] });
     UI.hud.classList.add("oculto"); UI.mira.classList.add("oculto"); UI.mensaje.textContent = "";
-    mostrarPantalla("DEFIENDE LA BASE", "Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!", "EMPEZAR");
+    mostrarPantalla("DEFIENDE LA BASE", "Los zombis saldrán por los sitios que tú elijas.<br>¡Protege la base!", "EMPEZAR");
   });
   UI.pantalla.classList.add("oculto");
   J.estado = "base"; J.vida = AJUSTES.vidaBase; J.eliminados = 0; hud();
-  decir("Ponte en el centro de la habitación. Apunta al suelo y toca la pantalla para colocar la base.", true);
+  decir("Ponte en el centro de la zona de juego. Apunta al suelo y toca la pantalla para colocar la base.", true);
   ultimoT = 0;
   sesion.requestAnimationFrame(fotogramaRA);
 }
@@ -633,7 +685,7 @@ function fotogramaPrueba(t) {
   dibujarEscena(M.persp(1.1, w / h, 0.05, 50), V);
 }
 
-window.juego = { J, AJUSTES, disparar, alTocar, M };
+window.juego = { J, AJUSTES, disparar, alTocar, borrarUltimo, explotar, M };
 comprobarSoporte();
 </script>
 </body>
