@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Defiende la base</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,Arial,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  #lienzo{position:fixed;inset:0;width:100%;height:100%;display:none}
+  #overlay{position:fixed;inset:0;pointer-events:none}
+  #pantalla{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;padding:24px;box-sizing:border-box;text-align:center;background:radial-gradient(circle at 50% 40%,#3a0a0a 0%,#000 75%);pointer-events:auto}
+  #pantalla.transparente{background:rgba(0,0,0,.55)}
+  #titulo{font-size:44px;font-weight:900;margin:0;color:#ff3b3b;text-shadow:0 0 18px #f00,0 4px 0 #400;letter-spacing:1px}
+  #texto{font-size:22px;line-height:1.35;max-width:520px;margin:0}
+  #boton{font-size:34px;font-weight:900;padding:28px 44px;min-width:70%;border:0;border-radius:22px;background:#22c55e;color:#03140a;box-shadow:0 8px 0 #146c34,0 0 30px rgba(34,197,94,.6)}
+  #boton:active{transform:translateY(6px);box-shadow:0 2px 0 #146c34}
+  #boton:disabled{background:#555;color:#aaa;box-shadow:none}
+  #hud{position:absolute;top:0;left:0;right:0;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;font-size:24px;font-weight:800;text-shadow:0 2px 4px #000,0 0 6px #000}
+  #vidaMarco{width:46vw;height:24px;border:3px solid #fff;border-radius:12px;overflow:hidden;background:rgba(0,0,0,.5)}
+  #vida{height:100%;width:100%;background:#22c55e;transition:width .2s}
+  #mensaje{position:absolute;left:0;right:0;bottom:6%;padding:0 18px;text-align:center;font-size:26px;font-weight:800;text-shadow:0 2px 6px #000,0 0 10px #000}
+  #mira{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border:4px solid #fff;border-radius:50%;box-shadow:0 0 6px #000,inset 0 0 6px #000}
+  #mira::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;background:#ff3b3b;border-radius:50%}
+  .flecha{position:absolute;top:50%;margin-top:-50px;font-size:90px;font-weight:900;color:#ff3b3b;text-shadow:0 0 12px #000;animation:lat .5s infinite alternate}
+  #fIzq{left:6px} #fDer{right:6px}
+  @keyframes lat{from{opacity:1}to{opacity:.35}}
+  #rojo{position:absolute;inset:0;box-shadow:inset 0 0 120px 60px rgba(255,0,0,.85);opacity:0;transition:opacity .35s}
+  #fogonazo{position:absolute;left:50%;top:50%;width:160px;height:160px;margin:-80px 0 0 -80px;border-radius:50%;background:radial-gradient(circle,rgba(255,240,180,.95),rgba(255,160,0,0) 70%);opacity:0}
+  .oculto{display:none!important}
+</style>
+</head>
+<body>
+<canvas id="lienzo"></canvas>
+<div id="overlay">
+  <div id="rojo"></div>
+  <div id="fogonazo"></div>
+  <div id="hud" class="oculto">
+    <div>BASE <div id="vidaMarco"><div id="vida"></div></div></div>
+    <div id="oleadaTxt">Oleada 1/5</div>
+  </div>
+  <div id="mira" class="oculto"></div>
+  <div id="fIzq" class="flecha oculto">&#9664;</div>
+  <div id="fDer" class="flecha oculto">&#9654;</div>
+  <div id="mensaje"></div>
+  <div id="pantalla">
+    <h1 id="titulo">DEFIENDE LA BASE</h1>
+    <p id="texto">Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!</p>
+    <button id="boton" disabled>CARGANDO…</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================
+   DEFIENDE LA BASE — juego de realidad mixta para Chrome Android
+   Sin librerías: WebXR + WebGL2 directamente.
+   ?prueba  -> modo de prueba en ordenador (sin cámara ni RA)
+   ========================================================= */
+
+// ---------- Ajustes del juego (se pueden cambiar) ----------
+const AJUSTES = {
+  vidaBase: 10,
+  numParedes: 4,
+  distanciaMinParedBase: 0.9,   // metros
+  entrarDesdePared: 0.35,       // los zombis aparecen esta distancia HACIA DENTRO de la pared
+  anchoSalida: 0.5,             // desplazamiento lateral máximo a lo largo de la pared
+  oleadas: [
+    { n: 3, vel: 0.22, cada: 3.0 },
+    { n: 5, vel: 0.27, cada: 2.6 },
+    { n: 7, vel: 0.32, cada: 2.2 },
+    { n: 9, vel: 0.36, cada: 1.8 },
+    { n: 9, vel: 0.40, cada: 1.6, jefe: true }
+  ]
+};
+
+const PRUEBA = new URLSearchParams(location.search).has("prueba");
+const $ = id => document.getElementById(id);
+const UI = {
+  pantalla: $("pantalla"), titulo: $("titulo"), texto: $("texto"), boton: $("boton"),
+  hud: $("hud"), vida: $("vida"), oleada: $("oleadaTxt"), mensaje: $("mensaje"), mira: $("mira"),
+  fIzq: $("fIzq"), fDer: $("fDer"), rojo: $("rojo"), fogonazo: $("fogonazo")
+};
+
+// ---------- Matemáticas (matrices 4x4 por columnas) ----------
+const M = {
+  id() { const m = new Float32Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m; },
+  mul(a, b) {
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+    return o;
+  },
+  T(x, y, z) { const m = M.id(); m[12] = x; m[13] = y; m[14] = z; return m; },
+  S(x, y, z) { const m = M.id(); m[0] = x; m[5] = y; m[10] = z; return m; },
+  Rx(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[5] = c; m[6] = s; m[9] = -s; m[10] = c; return m; },
+  Ry(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m; },
+  Rz(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[0] = c; m[1] = s; m[4] = -s; m[5] = c; return m; },
+  chain(...ms) { return ms.reduce((acc, m) => M.mul(acc, m)); },
+  persp(fov, asp, n, f) {
+    const t = 1 / Math.tan(fov / 2), m = new Float32Array(16);
+    m[0] = t / asp; m[5] = t; m[10] = (f + n) / (n - f); m[11] = -1; m[14] = 2 * f * n / (n - f); return m;
+  },
+  fromQuat(q, p) {
+    const [x, y, z, w] = q, m = M.id();
+    m[0] = 1 - 2 * (y * y + z * z); m[1] = 2 * (x * y + z * w); m[2] = 2 * (x * z - y * w);
+    m[4] = 2 * (x * y - z * w); m[5] = 1 - 2 * (x * x + z * z); m[6] = 2 * (y * z + x * w);
+    m[8] = 2 * (x * z + y * w); m[9] = 2 * (y * z - x * w); m[10] = 1 - 2 * (x * x + y * y);
+    m[12] = p[0]; m[13] = p[1]; m[14] = p[2]; return m;
+  },
+  invRigid(m) {
+    const o = M.id();
+    o[0] = m[0]; o[1] = m[4]; o[2] = m[8];
+    o[4] = m[1]; o[5] = m[5]; o[6] = m[9];
+    o[8] = m[2]; o[9] = m[6]; o[10] = m[10];
+    o[12] = -(m[0] * m[12] + m[1] * m[13] + m[2] * m[14]);
+    o[13] = -(m[4] * m[12] + m[5] * m[13] + m[6] * m[14]);
+    o[14] = -(m[8] * m[12] + m[9] * m[13] + m[10] * m[14]);
+    return o;
+  }
+};
+function rotarQ(q, v) { // gira el vector v con el cuaternión q
+  const [qx, qy, qz, qw] = q, [vx, vy, vz] = v;
+  const tx = 2 * (qy * vz - qz * vy), ty = 2 * (qz * vx - qx * vz), tz = 2 * (qx * vy - qy * vx);
+  return [vx + qw * tx + (qy * tz - qz * ty), vy + qw * ty + (qz * tx - qx * tz), vz + qw * tz + (qx * ty - qy * tx)];
+}
+const conj = q => [-q[0], -q[1], -q[2], q[3]];
+const azar = (a, b) => a + Math.random() * (b - a);
+
+// ---------- WebGL ----------
+const lienzo = $("lienzo");
+let gl = null, prog = null, U = {}, MALLA = {};
+
+function iniciarGL() {
+  gl = lienzo.getContext("webgl2", { xrCompatible: true, antialias: true, alpha: true });
+  if (!gl) throw new Error("Sin WebGL2");
+  const vs = ["#version 300 es",
+    "in vec3 aPos; in vec3 aNor;",
+    "uniform mat4 uP, uV, uM;",
+    "out vec3 vN;",
+    "void main(){ vN = mat3(uM) * aNor; gl_Position = uP * uV * uM * vec4(aPos, 1.0); }"].join("\n");
+  const fs = ["#version 300 es",
+    "precision mediump float;",
+    "in vec3 vN; uniform vec3 uC; uniform vec3 uE; out vec4 o;",
+    "void main(){",
+    "  vec3 n = normalize(vN);",
+    "  float d = max(dot(n, normalize(vec3(0.3, 1.0, 0.4))), 0.0);",
+    "  o = vec4(uC * (0.42 + 0.65 * d) + uE, 1.0);",
+    "}"].join("\n");
+  const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
+    if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(prog, 0, "aPos"); gl.bindAttribLocation(prog, 1, "aNor");
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  for (const n of ["uP", "uV", "uM", "uC", "uE"]) U[n] = gl.getUniformLocation(prog, n);
+  MALLA.caja = crearMalla(datosCaja());
+  MALLA.anillo = crearMalla(datosAnillo(0.08, 0.12, 32));
+}
+function crearMalla(datos) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(datos), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+  gl.bindVertexArray(null);
+  return { vao, n: datos.length / 6 };
+}
+function datosCaja() {
+  const d = [], caras = [
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]],
+    [[0, 1, 0], [0, 0, 1], [1, 0, 0]], [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+    [[0, 0, 1], [1, 0, 0], [0, 1, 0]], [[0, 0, -1], [0, 1, 0], [1, 0, 0]]];
+  for (const [n, u, v] of caras) {
+    const p = (a, b) => [0, 1, 2].map(i => n[i] * 0.5 + u[i] * a * 0.5 + v[i] * b * 0.5);
+    for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]]) d.push(...p(a, b), ...n);
+  }
+  return d;
+}
+function datosAnillo(r1, r2, seg) {
+  const d = [];
+  for (let i = 0; i < seg; i++) {
+    const a = i / seg * Math.PI * 2, b = (i + 1) / seg * Math.PI * 2;
+    const P = (r, t) => [Math.cos(t) * r, 0, Math.sin(t) * r];
+    for (const v of [P(r1, a), P(r2, a), P(r2, b), P(r1, a), P(r2, b), P(r1, b)]) d.push(...v, 0, 1, 0);
+  }
+  return d;
+}
+function dibujar(malla, m, color, emis) {
+  gl.uniformMatrix4fv(U.uM, false, m);
+  gl.uniform3fv(U.uC, color); gl.uniform3fv(U.uE, emis || [0, 0, 0]);
+  gl.bindVertexArray(malla.vao); gl.drawArrays(gl.TRIANGLES, 0, malla.n);
+}
+
+// ---------- Sonido (sintetizado, sin archivos) ----------
+let audio = null, ruidoBuf = null;
+function iniciarAudio() {
+  if (audio) { audio.resume(); return; }
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    ruidoBuf = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    const ch = ruidoBuf.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    // zumbido de fondo inquietante
+    const g = audio.createGain(); g.gain.value = 0.04; g.connect(audio.destination);
+    for (const f of [55, 58.3]) { const o = audio.createOscillator(); o.frequency.value = f; o.connect(g); o.start(); }
+  } catch (e) { audio = null; }
+}
+function env(g, t0, pico, ataque, dur) {
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(pico, t0 + ataque);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+}
+const SND = {
+  disparo() {
+    if (!audio) return; const t = audio.currentTime;
+    const s = audio.createBufferSource(); s.buffer = ruidoBuf;
+    const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 2500;
+    const g = audio.createGain(); env(g, t, 0.8, 0.005, 0.18);
+    s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + 0.2);
+    const o = audio.createOscillator(); o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.15);
+    const g2 = audio.createGain(); env(g2, t, 0.7, 0.005, 0.16); o.connect(g2).connect(audio.destination); o.start(t); o.stop(t + 0.2);
+  },
+  grunido(pan, grave) {
+    if (!audio) return; const t = audio.currentTime, base = grave ? 55 : 75 + Math.random() * 25;
+    const o = audio.createOscillator(); o.type = "sawtooth"; o.frequency.value = base;
+    const lfo = audio.createOscillator(); lfo.frequency.value = 5 + Math.random() * 4;
+    const lg = audio.createGain(); lg.gain.value = base * 0.2; lfo.connect(lg).connect(o.frequency);
+    const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = grave ? 380 : 600;
+    const g = audio.createGain(); env(g, t, grave ? 0.5 : 0.3, 0.15, 1.3);
+    const p = audio.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan));
+    o.connect(f).connect(g).connect(p).connect(audio.destination);
+    o.start(t); lfo.start(t); o.stop(t + 1.4); lfo.stop(t + 1.4);
+  },
+  impacto() {
+    if (!audio) return; const t = audio.currentTime;
+    const o = audio.createOscillator(); o.type = "square"; o.frequency.setValueAtTime(260, t); o.frequency.exponentialRampToValueAtTime(70, t + 0.12);
+    const g = audio.createGain(); env(g, t, 0.25, 0.005, 0.13); o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.15);
+  },
+  golpeBase() {
+    if (!audio) return; const t = audio.currentTime;
+    const s = audio.createBufferSource(); s.buffer = ruidoBuf;
+    const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 300;
+    const g = audio.createGain(); env(g, t, 1.0, 0.01, 0.6); s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + 0.7);
+  },
+  fanfarria(ok) {
+    if (!audio) return; const t = audio.currentTime;
+    (ok ? [523, 659, 784, 1047] : [392, 330, 262, 196]).forEach((fr, i) => {
+      const o = audio.createOscillator(); o.type = "triangle"; o.frequency.value = fr;
+      const g = audio.createGain(); env(g, t + i * 0.18, 0.35, 0.02, 0.5); o.connect(g).connect(audio.destination);
+      o.start(t + i * 0.18); o.stop(t + i * 0.18 + 0.55);
+    });
+  }
+};
+
+// ---------- Voz ----------
+let vozES = null;
+function cargarVoces() {
+  try { const v = speechSynthesis.getVoices(); vozES = v.find(x => x.lang === "es-ES") || v.find(x => x.lang && x.lang.startsWith("es")) || null; } catch (e) {}
+}
+if ("speechSynthesis" in window) { cargarVoces(); speechSynthesis.onvoiceschanged = cargarVoces; }
+function decir(t, cortar) {
+  UI.mensaje.textContent = t;
+  try {
+    if (cortar) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t); u.lang = "es-ES"; if (vozES) u.voice = vozES; u.rate = 1.0;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+function vibrar(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+// ---------- Estado del juego ----------
+const J = {
+  estado: "inicio",          // inicio | base | paredes | preparando | jugando | entre | fin
+  suelo: 0, base: null, paredes: [], salidas: [],
+  vida: AJUSTES.vidaBase, oleada: 0, porSalir: 0, relojSalida: 0, jefePendiente: false,
+  zombis: [], particulas: [], temporizadores: [], ultimaSalida: -1,
+  mira: null,                // punto del suelo/pared al que apunta el centro de la pantalla
+  pose: { pos: [0, 0, 0], quat: [0, 0, 0, 1] },
+  t: 0, ultimoAvisoDanio: -99, eliminados: 0
+};
+function despues(seg, fn) { J.temporizadores.push({ t: J.t + seg, fn }); }
+
+function hud() {
+  UI.vida.style.width = (100 * J.vida / AJUSTES.vidaBase) + "%";
+  UI.vida.style.background = J.vida > 6 ? "#22c55e" : J.vida > 3 ? "#facc15" : "#ef4444";
+  UI.oleada.textContent = "Oleada " + Math.min(J.oleada + 1, AJUSTES.oleadas.length) + "/" + AJUSTES.oleadas.length;
+}
+function mostrarPantalla(titulo, texto, boton, transparente) {
+  UI.titulo.textContent = titulo; UI.texto.innerHTML = texto; UI.boton.textContent = boton; UI.boton.disabled = false;
+  UI.pantalla.classList.remove("oculto"); UI.pantalla.classList.toggle("transparente", !!transparente);
+}
+
+// --- pasos de preparación ---
+function colocarBase() {
+  if (!J.mira) { decir("Mueve el móvil despacio apuntando al suelo hasta ver el círculo."); return; }
+  J.suelo = J.mira[1];
+  J.base = [J.mira[0], J.suelo, J.mira[2]];
+  J.estado = "paredes"; J.paredes = []; J.salidas = [];
+  vibrar(80);
+  decir("¡Base colocada! Ahora apunta al pie de una pared, justo donde toca el suelo, y toca la pantalla. Pared 1 de " + AJUSTES.numParedes + ".", true);
+}
+function marcarPared() {
+  if (!J.mira) { decir("Apunta al pie de la pared hasta ver el círculo rojo."); return; }
+  const x = J.mira[0], z = J.mira[2];
+  const dx = J.base[0] - x, dz = J.base[2] - z, d = Math.hypot(dx, dz);
+  if (d < AJUSTES.distanciaMinParedBase) { decir("Esa pared está muy cerca de la base. Apunta más lejos.", true); return; }
+  const dir = [dx / d, dz / d];
+  J.paredes.push([x, J.suelo, z]);
+  // punto de salida: un poco HACIA DENTRO de la habitación, nunca dentro de la pared
+  J.salidas.push({ x: x + dir[0] * AJUSTES.entrarDesdePared, z: z + dir[1] * AJUSTES.entrarDesdePared, dir, dist: d - AJUSTES.entrarDesdePared });
+  vibrar(60);
+  if (J.paredes.length < AJUSTES.numParedes) {
+    decir("Pared " + (J.paredes.length + 1) + " de " + AJUSTES.numParedes + ". Apunta a otra pared.", true);
+  } else {
+    J.estado = "preparando";
+    decir("¡Cuidado! Los zombis van a salir de esas paredes. Apunta con el círculo y toca la pantalla para disparar.", true);
+    despues(7, () => empezarOleada(0));
+  }
+}
+function empezarOleada(i) {
+  J.oleada = i; const o = AJUSTES.oleadas[i];
+  J.porSalir = o.n; J.jefePendiente = !!o.jefe; J.relojSalida = 2.5; J.estado = "jugando";
+  hud();
+  decir(o.jefe ? "Última oleada. ¡Viene el jefe zombi!" : "Oleada " + (i + 1) + ". ¡Que vienen!", true);
+}
+
+// --- zombis ---
+function puntoDeSalida() {
+  let k = Math.floor(Math.random() * J.salidas.length);
+  if (J.salidas.length > 1 && k === J.ultimaSalida) k = (k + 1 + Math.floor(Math.random() * (J.salidas.length - 1))) % J.salidas.length;
+  J.ultimaSalida = k;
+  const s = J.salidas[k];
+  // desplazamiento a lo largo de la pared (perpendicular a la dirección hacia la base)
+  const lado = azar(-AJUSTES.anchoSalida, AJUSTES.anchoSalida);
+  return { x: s.x - s.dir[1] * lado, z: s.z + s.dir[0] * lado };
+}
+function crearZombi(jefe) {
+  const p = puntoDeSalida(), o = AJUSTES.oleadas[J.oleada];
+  const z = {
+    x: p.x, z: p.z, yaw: 0, jefe,
+    esc: jefe ? 1.35 : azar(0.92, 1.05),
+    vida: jefe ? 8 : 2, vel: (jefe ? 0.6 : 1) * o.vel * azar(0.85, 1.15),
+    fase: Math.random() * 6, golpe: 0, muerto: false, tMuerte: 0, gru: azar(1, 3), surgir: 0
+  };
+  J.zombis.push(z);
+  grunirDesde(z, true);
+  return z;
+}
+function grunirDesde(z, fuerte) {
+  const loc = aLocal([z.x, J.suelo + 1.2, z.z]); const L = Math.hypot(loc[0], loc[2]) || 1;
+  SND.grunido(loc[0] / L, z.jefe || fuerte && Math.random() < 0.3);
+}
+function aLocal(p) { // punto del mundo -> coordenadas relativas al móvil
+  const v = [p[0] - J.pose.pos[0], p[1] - J.pose.pos[1], p[2] - J.pose.pos[2]];
+  return rotarQ(conj(J.pose.quat), v);
+}
+function disparar() {
+  SND.disparo(); vibrar(25);
+  UI.fogonazo.style.transition = "none"; UI.fogonazo.style.opacity = 1;
+  requestAnimationFrame(() => { UI.fogonazo.style.transition = "opacity .15s"; UI.fogonazo.style.opacity = 0; });
+  const o = J.pose.pos, d = rotarQ(J.pose.quat, [0, 0, -1]);
+  let mejor = null, mejorT = 1e9;
+  for (const z of J.zombis) {
+    if (z.muerto) continue;
+    for (const h of [0.6, 1.05, 1.45]) { // piernas, cuerpo, cabeza
+      const c = [z.x - o[0], J.suelo + h * z.esc - o[1], z.z - o[2]];
+      const t = c[0] * d[0] + c[1] * d[1] + c[2] * d[2];
+      if (t < 0.2) continue;
+      const px = c[0] - d[0] * t, py = c[1] - d[1] * t, pz = c[2] - d[2] * t;
+      const tol = 0.28 * z.esc + 0.04 * t; // generoso para niños
+      if (Math.hypot(px, py, pz) < tol && t < mejorT) { mejor = z; mejorT = t; }
+    }
+  }
+  if (!mejor) return false;
+  const z = mejor;
+  z.vida--; z.golpe = 0.15; SND.impacto();
+  // retroceso, sin salir de la zona de la habitación (se aleja de la base, como mucho hasta su salida)
+  const dx = z.x - J.base[0], dz = z.z - J.base[2], L = Math.hypot(dx, dz) || 1;
+  if (L < 3) { z.x += dx / L * 0.12; z.z += dz / L * 0.12; }
+  salpicar([z.x, J.suelo + 1.1 * z.esc, z.z], 10, [0.45, 0.05, 0.05]);
+  if (z.vida <= 0) { z.muerto = true; z.tMuerte = 0; J.eliminados++; salpicar([z.x, J.suelo + 1.2 * z.esc, z.z], 18, [0.25, 0.4, 0.15]); }
+  return true;
+}
+function salpicar(p, n, col) {
+  for (let i = 0; i < n; i++) J.particulas.push({ p: [...p], v: [azar(-1.2, 1.2), azar(0.5, 2.2), azar(-1.2, 1.2)], vida: azar(0.5, 0.9), col, s: azar(0.03, 0.06) });
+}
+function danioBase(z) {
+  J.vida = Math.max(0, J.vida - (z.jefe ? 3 : 1)); hud();
+  SND.golpeBase(); vibrar([150, 60, 150]);
+  UI.rojo.style.opacity = 1; setTimeout(() => UI.rojo.style.opacity = 0, 250);
+  salpicar([J.base[0], J.suelo + 0.3, J.base[2]], 16, [0.5, 0.3, 0.1]);
+  if (J.vida <= 0) { perder(); return; }
+  if (J.t - J.ultimoAvisoDanio > 8) { J.ultimoAvisoDanio = J.t; decir("¡La base está recibiendo daño!"); }
+}
+function perder() {
+  J.estado = "fin"; SND.fanfarria(false);
+  decir("¡Oh, no! Los zombis han destruido la base. ¿Lo intentas otra vez?", true);
+  mostrarPantalla("¡BASE DESTRUIDA!", "Has eliminado " + J.eliminados + " zombis.", "JUGAR OTRA VEZ", true);
+}
+function ganar() {
+  J.estado = "fin"; SND.fanfarria(true);
+  decir("¡Increíble! Has salvado la base. ¡Eres un auténtico cazador de zombis!", true);
+  mostrarPantalla("¡BASE SALVADA!", "Has eliminado " + J.eliminados + " zombis.", "JUGAR OTRA VEZ", true);
+}
+function reiniciarPartida() {
+  J.zombis = []; J.particulas = []; J.temporizadores = []; J.vida = AJUSTES.vidaBase; J.eliminados = 0;
+  UI.pantalla.classList.add("oculto"); hud();
+  J.estado = "preparando"; decir("¡Otra vez! Prepárate.", true);
+  despues(3, () => empezarOleada(0));
+}
+
+// ---------- Actualización por fotograma ----------
+function actualizar(dt) {
+  J.t += dt;
+  for (const tm of J.temporizadores.splice(0)) { if (J.t >= tm.t) tm.fn(); else J.temporizadores.push(tm); }
+
+  if (J.estado === "jugando") {
+    J.relojSalida -= dt;
+    const o = AJUSTES.oleadas[J.oleada];
+    if (J.porSalir > 0 && J.relojSalida <= 0) { crearZombi(false); J.porSalir--; J.relojSalida = o.cada * azar(0.8, 1.2); }
+    else if (J.porSalir === 0 && J.jefePendiente && J.relojSalida <= 0) { J.jefePendiente = false; crearZombi(true); }
+    if (J.porSalir === 0 && !J.jefePendiente && J.zombis.every(z => z.muerto) && J.zombis.length === 0) {
+      if (J.oleada + 1 >= AJUSTES.oleadas.length) ganar();
+      else { J.estado = "entre"; decir("¡Oleada superada! Prepárate para la siguiente.", true); despues(6, () => empezarOleada(J.oleada + 1)); }
+    }
+  }
+
+  for (const z of J.zombis) {
+    z.golpe = Math.max(0, z.golpe - dt);
+    if (z.muerto) { z.tMuerte += dt; continue; }
+    z.surgir = Math.min(1, z.surgir + dt / 0.8);    // sale del suelo junto a la pared
+    const dx = J.base[0] - z.x, dz = J.base[2] - z.z, d = Math.hypot(dx, dz);
+    z.yaw = Math.atan2(dx, dz);
+    const v = z.vel * (d < 0.9 ? 1.6 : 1) * z.surgir; // embestida final
+    z.x += dx / d * v * dt; z.z += dz / d * v * dt; z.fase += dt * (4 + v * 6);
+    z.gru -= dt; if (z.gru <= 0) { z.gru = azar(3, 6); grunirDesde(z, false); }
+    if (d < 0.38 + 0.1 * z.esc && J.estado === "jugando") { z.muerto = true; z.tMuerte = 1.2; danioBase(z); }
+  }
+  J.zombis = J.zombis.filter(z => !(z.muerto && z.tMuerte > 1.6));
+
+  for (const p of J.particulas) { p.vida -= dt; p.v[1] -= 6 * dt; for (let i = 0; i < 3; i++) p.p[i] += p.v[i] * dt; if (p.p[1] < J.suelo) { p.p[1] = J.suelo; p.v = [0, 0, 0]; } }
+  J.particulas = J.particulas.filter(p => p.vida > 0);
+
+  // flechas hacia el zombi vivo más cercano a la base si no se ve
+  let izq = false, der = false;
+  if (J.estado === "jugando" || J.estado === "entre") {
+    let cerca = null, dm = 1e9;
+    for (const z of J.zombis) if (!z.muerto) { const d = Math.hypot(z.x - J.base[0], z.z - J.base[2]); if (d < dm) { dm = d; cerca = z; } }
+    if (cerca) {
+      const l = aLocal([cerca.x, J.suelo + 1, cerca.z]); const ang = Math.atan2(l[0], -l[2]);
+      if (Math.abs(ang) > 0.45) { if (ang < 0) izq = true; else der = true; }
+    }
+  }
+  UI.fIzq.classList.toggle("oculto", !izq); UI.fDer.classList.toggle("oculto", !der);
+  const enJuego = ["base", "paredes", "preparando", "jugando", "entre"].includes(J.estado);
+  UI.mira.classList.toggle("oculto", !enJuego);
+  UI.hud.classList.toggle("oculto", !["preparando", "jugando", "entre", "fin"].includes(J.estado));
+}
+
+// ---------- Dibujo de la escena ----------
+const COL = {
+  piel: [0.36, 0.46, 0.32], pielJefe: [0.30, 0.36, 0.28], camisa: [0.32, 0.12, 0.10], pantalon: [0.14, 0.16, 0.24],
+  ojo: [0, 0, 0], boca: [0.08, 0.02, 0.02], caja: [0.45, 0.30, 0.15], metal: [0.35, 0.35, 0.38]
+};
+function dibujarZombi(z) {
+  const caida = z.muerto ? Math.min(1, z.tMuerte / 0.6) : 0;
+  const hundir = z.muerto ? -Math.max(0, z.tMuerte - 0.8) * 0.6 : -(1 - z.surgir) * 1.2 * z.esc;
+  const raiz = M.chain(M.T(z.x, J.suelo + hundir, z.z), M.Ry(z.yaw), M.S(z.esc, z.esc, z.esc), M.Rx(0.15 - caida * 1.65));
+  const ph = z.fase, e = z.golpe > 0 ? [0.8, 0.8, 0.8] : [0, 0, 0];
+  const piel = z.jefe ? COL.pielJefe : COL.piel;
+  const parte = (piv, rx, rz, off, tam, col, em) =>
+    dibujar(MALLA.caja, M.chain(raiz, M.T(...piv), M.Rx(rx), M.Rz(rz), M.T(...off), M.S(...tam)), col, em || e);
+  const pas = z.muerto ? 0 : Math.sin(ph) * 0.5;
+  parte([-0.11, 0.85, 0], pas, 0, [0, -0.425, 0], [0.15, 0.85, 0.17], COL.pantalon);
+  parte([0.11, 0.85, 0], -pas, 0, [0, -0.425, 0], [0.15, 0.85, 0.17], COL.pantalon);
+  parte([0, 0.85, 0], 0, Math.sin(ph * 0.5) * 0.06, [0, 0.3, 0], [0.44, 0.62, 0.25], COL.camisa);
+  const brazo = z.muerto ? -0.3 : -1.4;
+  parte([-0.28, 1.38, 0], brazo + Math.sin(ph * 0.7) * 0.15, 0.08, [0, -0.3, 0], [0.11, 0.62, 0.11], piel);
+  parte([0.28, 1.38, 0], brazo + Math.sin(ph * 0.7 + 1.5) * 0.15, -0.08, [0, -0.3, 0], [0.11, 0.62, 0.11], piel);
+  const inclinar = Math.sin(ph * 0.45) * 0.3;
+  parte([0, 1.47, 0.02], 0.2, inclinar, [0, 0.15, 0], [0.27, 0.29, 0.27], piel);
+  const brillo = z.muerto ? [0.2, 0, 0] : [1, 0.05, 0.02];
+  parte([0, 1.47, 0.02], 0.2, inclinar, [-0.065, 0.19, 0.14], [0.06, 0.035, 0.02], COL.ojo, brillo);
+  parte([0, 1.47, 0.02], 0.2, inclinar, [0.065, 0.19, 0.14], [0.06, 0.035, 0.02], COL.ojo, brillo);
+  parte([0, 1.47, 0.02], 0.2, inclinar, [0, 0.07, 0.14], [0.14, 0.05, 0.02], COL.boca);
+}
+function dibujarBase() {
+  const [bx, by, bz] = J.base;
+  for (let i = 0; i < 6; i++) {
+    const a = i / 6 * Math.PI * 2;
+    dibujar(MALLA.caja, M.chain(M.T(bx + Math.cos(a) * 0.27, by + 0.09, bz + Math.sin(a) * 0.27), M.Ry(-a), M.S(0.17, 0.18, 0.17)), COL.caja);
+  }
+  const pulso = 0.5 + 0.5 * Math.sin(J.t * 4);
+  const col = J.vida > 3 ? [0.1, 0.8, 1.0] : [1.0, 0.1, 0.1];
+  dibujar(MALLA.caja, M.chain(M.T(bx, by + 0.2, bz), M.S(0.07, 0.4, 0.07)), COL.metal);
+  dibujar(MALLA.caja, M.chain(M.T(bx, by + 0.46, bz), M.Ry(J.t * 2), M.S(0.14, 0.14, 0.14)), [0, 0, 0], col.map(c => c * (0.6 + 0.4 * pulso)));
+  dibujar(MALLA.anillo, M.chain(M.T(bx, by + 0.005, bz), M.S(4, 1, 4)), [0, 0, 0], col.map(c => c * 0.5));
+}
+function dibujarEscena(P, V) {
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(U.uP, false, P); gl.uniformMatrix4fv(U.uV, false, V);
+  if (J.base) dibujarBase();
+  for (const s of J.salidas) { // grietas rojas al pie de cada pared
+    dibujar(MALLA.caja, M.chain(M.T(s.x, J.suelo + 0.004, s.z), M.Ry(Math.atan2(s.dir[0], s.dir[1])), M.S(0.9, 0.008, 0.18)), [0.05, 0.02, 0.02], [0.35 + 0.15 * Math.sin(J.t * 3), 0, 0]);
+  }
+  for (const z of J.zombis) dibujarZombi(z);
+  for (const p of J.particulas) dibujar(MALLA.caja, M.chain(M.T(...p.p), M.S(p.s, p.s, p.s)), p.col);
+  if (J.mira && (J.estado === "base" || J.estado === "paredes")) {
+    const c = J.estado === "base" ? [0.1, 0.9, 1] : [1, 0.15, 0.1];
+    dibujar(MALLA.anillo, M.chain(M.T(J.mira[0], J.mira[1] + 0.005, J.mira[2]), M.S(1.6, 1, 1.6)), [0, 0, 0], c);
+  }
+}
+
+// ---------- Botón grande ----------
+function alPulsarBoton() {
+  iniciarAudio();
+  if (J.estado === "inicio") { PRUEBA ? iniciarPrueba() : iniciarRA(); }
+  else if (J.estado === "fin") reiniciarPartida();
+}
+UI.boton.addEventListener("click", alPulsarBoton);
+// que tocar la pantalla de botones no cuente como disparo
+UI.pantalla.addEventListener("beforexrselect", e => e.preventDefault());
+
+function alTocar() {
+  if (J.estado === "base") colocarBase();
+  else if (J.estado === "paredes") marcarPared();
+  else if (J.estado === "jugando" || J.estado === "entre" || J.estado === "preparando") disparar();
+}
+
+// ---------- Realidad aumentada (WebXR) ----------
+let sesion = null, espacio = null, fuenteHit = null, ultimoT = 0;
+async function comprobarSoporte() {
+  if (PRUEBA) { mostrarPantalla("DEFIENDE LA BASE", "Modo prueba en ordenador.<br>Clic = disparar · flechas = girar", "EMPEZAR"); return; }
+  let ok = false;
+  try { ok = !!(navigator.xr && await navigator.xr.isSessionSupported("immersive-ar")); } catch (e) {}
+  if (ok) mostrarPantalla("DEFIENDE LA BASE", "Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!", "EMPEZAR");
+  else {
+    UI.boton.textContent = "NO DISPONIBLE"; UI.boton.disabled = true;
+    UI.texto.innerHTML = "Este móvil o navegador no permite realidad aumentada.<br><br>Ábrelo con <b>Chrome</b> en Android y comprueba que está instalada la app <b>Servicios de Google Play para RA</b>.";
+  }
+}
+async function iniciarRA() {
+  try {
+    sesion = await navigator.xr.requestSession("immersive-ar", {
+      requiredFeatures: ["hit-test", "local"],
+      optionalFeatures: ["dom-overlay"],
+      domOverlay: { root: $("overlay") }
+    });
+  } catch (e) {
+    UI.texto.innerHTML = "No se pudo abrir la cámara en modo realidad aumentada.<br>Da permiso a la cámara y vuelve a intentarlo."; return;
+  }
+  if (!gl) iniciarGL();
+  await gl.makeXRCompatible();
+  sesion.updateRenderState({ baseLayer: new XRWebGLLayer(sesion, gl) });
+  espacio = await sesion.requestReferenceSpace("local");
+  const visor = await sesion.requestReferenceSpace("viewer");
+  fuenteHit = await sesion.requestHitTestSource({ space: visor });
+  sesion.addEventListener("select", alTocar);
+  sesion.addEventListener("end", () => {
+    sesion = null; fuenteHit = null; Object.assign(J, { estado: "inicio", base: null, paredes: [], salidas: [], zombis: [], particulas: [], temporizadores: [] });
+    UI.hud.classList.add("oculto"); UI.mira.classList.add("oculto"); UI.mensaje.textContent = "";
+    mostrarPantalla("DEFIENDE LA BASE", "Los zombis van a atravesar las paredes de la habitación.<br>¡Protege la base!", "EMPEZAR");
+  });
+  UI.pantalla.classList.add("oculto");
+  J.estado = "base"; J.vida = AJUSTES.vidaBase; J.eliminados = 0; hud();
+  decir("Ponte en el centro de la habitación. Apunta al suelo y toca la pantalla para colocar la base.", true);
+  ultimoT = 0;
+  sesion.requestAnimationFrame(fotogramaRA);
+}
+function fotogramaRA(t, frame) {
+  const s = frame.session; s.requestAnimationFrame(fotogramaRA);
+  const dt = ultimoT ? Math.min(0.05, (t - ultimoT) / 1000) : 0; ultimoT = t;
+  const pose = frame.getViewerPose(espacio);
+  if (!pose) return;
+  const p = pose.transform.position, o = pose.transform.orientation;
+  J.pose = { pos: [p.x, p.y, p.z], quat: [o.x, o.y, o.z, o.w] };
+  J.mira = null;
+  if (fuenteHit) {
+    const r = frame.getHitTestResults(fuenteHit);
+    if (r.length) {
+      const hp = r[0].getPose(espacio);
+      if (hp) { const q = hp.transform.position; J.mira = [q.x, q.y, q.z]; }
+    }
+  }
+  // al marcar paredes, el punto se baja siempre al nivel del suelo (por si el rayo da en la pared)
+  if (J.mira && J.estado === "paredes") J.mira[1] = J.suelo;
+  actualizar(dt);
+  const capa = s.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, capa.framebuffer);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  for (const v of pose.views) {
+    const vp = capa.getViewport(v); gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    dibujarEscena(v.projectionMatrix, v.transform.inverse.matrix);
+  }
+}
+
+// ---------- Modo prueba en ordenador (sin RA) ----------
+const prueba = { yaw: 0, pitch: -0.35, ultimo: 0 };
+function iniciarPrueba() {
+  if (!gl) iniciarGL();
+  lienzo.style.display = "block";
+  UI.pantalla.classList.add("oculto");
+  // habitación simulada de 4 x 4 m con el móvil a 1,3 m del suelo
+  J.estado = "base"; J.pose = { pos: [0, 0, 0], quat: [0, 0, 0, 1] };
+  J.mira = [0, -1.3, -1.6]; colocarBase();
+  for (const m of [[0, -1.3, -3.6], [2.0, -1.3, -1.6], [-2.0, -1.3, -1.6], [0, -1.3, 0.4]]) { J.mira = m; marcarPared(); }
+  J.mira = null;
+  lienzo.addEventListener("pointerdown", alTocar);
+  addEventListener("keydown", e => { if (e.key === "ArrowLeft") prueba.yaw += 0.15; if (e.key === "ArrowRight") prueba.yaw -= 0.15;
+    if (e.key === "ArrowUp") prueba.pitch += 0.1; if (e.key === "ArrowDown") prueba.pitch -= 0.1; if (e.key === " ") alTocar(); });
+  requestAnimationFrame(fotogramaPrueba);
+}
+function quatPrueba() {
+  const cy = Math.cos(prueba.yaw / 2), sy = Math.sin(prueba.yaw / 2), cp = Math.cos(prueba.pitch / 2), sp = Math.sin(prueba.pitch / 2);
+  return [cy * sp, sy * cp, -sy * sp, cy * cp]; // yaw (Y) * pitch (X)
+}
+function fotogramaPrueba(t) {
+  requestAnimationFrame(fotogramaPrueba);
+  const dt = prueba.ultimo ? Math.min(0.05, (t - prueba.ultimo) / 1000) * (window.velocidadPrueba || 1) : 0; prueba.ultimo = t;
+  J.pose = { pos: [0, 0, 0], quat: quatPrueba() };
+  actualizar(dt);
+  const w = lienzo.clientWidth, h = lienzo.clientHeight;
+  if (lienzo.width !== w || lienzo.height !== h) { lienzo.width = w; lienzo.height = h; }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, w, h);
+  gl.clearColor(0.55, 0.52, 0.48, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  const V = M.invRigid(M.fromQuat(J.pose.quat, J.pose.pos));
+  gl.useProgram(prog); gl.uniformMatrix4fv(U.uP, false, M.persp(1.1, w / h, 0.05, 50)); gl.uniformMatrix4fv(U.uV, false, V);
+  dibujar(MALLA.caja, M.chain(M.T(0, -1.31, -1.6), M.S(4, 0.01, 4)), [0.5, 0.42, 0.3]); // suelo simulado
+  dibujar(MALLA.caja, M.chain(M.T(0, 0, -3.65), M.S(4, 2.6, 0.05)), [0.75, 0.75, 0.7]);  // pared del fondo
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  dibujarEscena(M.persp(1.1, w / h, 0.05, 50), V);
+}
+
+window.juego = { J, AJUSTES, disparar, alTocar, M };
+comprobarSoporte();
+</script>
+</body>
+</html>
