@@ -50,7 +50,8 @@ const AJUSTES = {
   vidasMax: 5,
   limiteX: 7, limiteYAbajo: -3, limiteYArriba: 4,
   velocidadAvion: 13,          // lo rápido que se mueve tu avión
-  sensibilidad: 3.2,           // cuánto hay que inclinar el móvil (más alto = menos inclinación)
+  sensibilidad: 4.2,           // cuánto hay que inclinar el móvil (más alto = menos inclinación)
+  suavidad: 3.5,               // más bajo = movimiento más suave
   cadencia: 0.14,              // segundos entre disparos manteniendo el dedo
   oleadas: 10
 };
@@ -192,14 +193,16 @@ function decir(t, cortar) {
 function vibrar(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
 
 // ---------- Sensores: inclinar el móvil ----------
-const sensor = { g: [0, 0, 9.8], neutro: null, recibido: false, teclas: {} };
+const sensor = { g: [0, 0, 9.8], f: null, neutro: null, recibido: false, teclas: {} };
 addEventListener("devicemotion", e => {
   const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
   sensor.g = [a.x, a.y, a.z]; sensor.recibido = true;
+  if (!sensor.f) sensor.f = [...sensor.g];
+  for (let i = 0; i < 3; i++) sensor.f[i] += (sensor.g[i] - sensor.f[i]) * 0.2;   // filtro: quita temblores
 });
 function gravedadPantalla() { // gravedad en coordenadas de la pantalla (tenga el giro que tenga)
   const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
-  const [x, y] = sensor.g, c = Math.cos(ang), s = Math.sin(ang);
+  const [x, y] = sensor.f || sensor.g, c = Math.cos(ang), s = Math.sin(ang);
   return [x * c + y * s, -x * s + y * c];
 }
 function calibrar() { sensor.neutro = gravedadPantalla(); }
@@ -210,9 +213,11 @@ function mando() { // devuelve [-1..1, -1..1]
   }
   if (!sensor.neutro) calibrar();
   const [sx, sy] = gravedadPantalla();
-  const zona = v => Math.abs(v) < 0.08 ? 0 : v;   // pequeña zona muerta para que no tiemble
-  return [zona(limitar(-(sx - sensor.neutro[0]) / AJUSTES.sensibilidad, -1, 1)),
-          zona(limitar((sy - sensor.neutro[1]) / AJUSTES.sensibilidad, -1, 1))];
+  // zona muerta pequeña + curva suave: poca inclinación = movimiento fino
+  const zona = v => { const a = Math.max(0, Math.abs(v) - 0.06) / 0.94; return Math.sign(v) * Math.pow(a, 1.4); };
+  // inclinar a la derecha = avión a la derecha; móvil hacia delante = bajar; hacia ti = subir
+  return [zona(limitar((sx - sensor.neutro[0]) / AJUSTES.sensibilidad, -1, 1)),
+          zona(limitar(-(sy - sensor.neutro[1]) / AJUSTES.sensibilidad, -1, 1))];
 }
 addEventListener("keydown", e => { sensor.teclas[e.key] = true; if (e.key === " ") disparando = true; });
 addEventListener("keyup", e => { sensor.teclas[e.key] = false; if (e.key === " ") disparando = false; });
@@ -365,8 +370,8 @@ function actualizar(dt) {
   // mover el avión
   if (vivo) {
     const [mx, my] = mando();
-    J.vx += (mx * AJUSTES.velocidadAvion - J.vx) * Math.min(1, dt * 6);
-    J.vy += (my * AJUSTES.velocidadAvion * 0.8 - J.vy) * Math.min(1, dt * 6);
+    J.vx += (mx * AJUSTES.velocidadAvion - J.vx) * Math.min(1, dt * AJUSTES.suavidad);
+    J.vy += (my * AJUSTES.velocidadAvion * 0.8 - J.vy) * Math.min(1, dt * AJUSTES.suavidad);
     J.x = limitar(J.x + J.vx * dt, -AJUSTES.limiteX, AJUSTES.limiteX);
     J.y = limitar(J.y + J.vy * dt, AJUSTES.limiteYAbajo, AJUSTES.limiteYArriba);
     J.inmune = Math.max(0, J.inmune - dt);
