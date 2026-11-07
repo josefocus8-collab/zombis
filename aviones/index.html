@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color" content="#7fb8e6">
+<title>Combate aéreo</title>
+<style>
+  html,body{margin:0;height:100%;background:#7fb8e6;color:#fff;font-family:system-ui,Arial,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  #lienzo{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #toque{position:fixed;inset:0}
+  #hud{position:fixed;top:0;left:0;right:0;padding:10px 16px;display:flex;justify-content:space-between;align-items:flex-start;font-size:24px;font-weight:900;text-shadow:0 2px 4px #000,0 0 6px #000;pointer-events:none}
+  #vidas{font-size:28px;letter-spacing:2px}
+  #jefeBarra{position:fixed;top:52px;left:50%;width:44vw;margin-left:-22vw;height:18px;border:3px solid #fff;border-radius:10px;overflow:hidden;background:rgba(0,0,0,.45);pointer-events:none}
+  #jefeVida{height:100%;width:100%;background:#ef4444}
+  #mensaje{position:fixed;left:0;right:0;bottom:5%;padding:0 18px;text-align:center;font-size:26px;font-weight:900;text-shadow:0 2px 6px #000,0 0 10px #000;pointer-events:none}
+  #rojo{position:fixed;inset:0;box-shadow:inset 0 0 120px 60px rgba(255,0,0,.85);opacity:0;transition:opacity .35s;pointer-events:none}
+  #pantalla{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:20px;box-sizing:border-box;text-align:center;background:radial-gradient(circle at 50% 35%,#1e5aa8 0%,#071a33 80%)}
+  #pantalla.transparente{background:rgba(0,0,0,.55)}
+  #titulo{font-size:44px;font-weight:900;margin:0;color:#ffd23f;text-shadow:0 0 16px #f80,0 4px 0 #6a3a00}
+  #texto{font-size:21px;line-height:1.35;max-width:620px;margin:0}
+  #boton{font-size:32px;font-weight:900;padding:22px 44px;min-width:55%;border:0;border-radius:22px;background:#22c55e;color:#03140a;box-shadow:0 8px 0 #146c34,0 0 30px rgba(34,197,94,.6)}
+  #boton:active{transform:translateY(6px);box-shadow:0 2px 0 #146c34}
+  .oculto{display:none!important}
+</style>
+</head>
+<body>
+<canvas id="lienzo"></canvas>
+<div id="toque"></div>
+<div id="rojo"></div>
+<div id="hud" class="oculto"><div id="vidas"></div><div id="oleadaTxt">Oleada 1/10</div><div id="puntos">0</div></div>
+<div id="jefeBarra" class="oculto"><div id="jefeVida"></div></div>
+<div id="mensaje"></div>
+<div id="pantalla">
+  <h1 id="titulo">COMBATE AÉREO</h1>
+  <p id="texto">Pon el móvil en horizontal.<br>Inclínalo para volar y toca la pantalla para disparar.</p>
+  <button id="boton">EMPEZAR</button>
+</div>
+
+<script>
+"use strict";
+/* =========================================================
+   COMBATE AÉREO — juego 3D para Chrome Android (Samsung S22)
+   Sin librerías: WebGL2 + sensores del móvil.
+   ?prueba -> modo de prueba en ordenador (flechas = mover, espacio = disparar)
+   ========================================================= */
+
+// ---------- Ajustes del juego ----------
+const AJUSTES = {
+  vidasMax: 5,
+  limiteX: 7, limiteYAbajo: -3, limiteYArriba: 4,
+  velocidadAvion: 13,          // lo rápido que se mueve tu avión
+  sensibilidad: 3.2,           // cuánto hay que inclinar el móvil (más alto = menos inclinación)
+  cadencia: 0.14,              // segundos entre disparos manteniendo el dedo
+  oleadas: 10
+};
+function datosOleada(i) { // i = 1..10
+  const jefe = i === 5 ? 1 : i === 10 ? 2 : 0;
+  return {
+    n: jefe ? (i === 5 ? 4 : 8) : 6 + 2 * i,
+    vel: 20 + 1.6 * i,
+    cada: Math.max(1.5, 2.7 - 0.12 * i),
+    disparo: Math.max(1.1, 3.2 - 0.22 * i),
+    jefe
+  };
+}
+
+const PRUEBA = new URLSearchParams(location.search).has("prueba");
+const $ = id => document.getElementById(id);
+const UI = { pantalla: $("pantalla"), titulo: $("titulo"), texto: $("texto"), boton: $("boton"), hud: $("hud"),
+  vidas: $("vidas"), oleada: $("oleadaTxt"), puntos: $("puntos"), jefeBarra: $("jefeBarra"), jefeVida: $("jefeVida"),
+  mensaje: $("mensaje"), rojo: $("rojo"), toque: $("toque") };
+const azar = (a, b) => a + Math.random() * (b - a);
+const limitar = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// ---------- Matemáticas ----------
+const M = {
+  id() { const m = new Float32Array(16); m[0] = m[5] = m[10] = m[15] = 1; return m; },
+  mul(a, b) { const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++)
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    return o; },
+  T(x, y, z) { const m = M.id(); m[12] = x; m[13] = y; m[14] = z; return m; },
+  S(x, y, z) { const m = M.id(); m[0] = x; m[5] = y; m[10] = z; return m; },
+  Rx(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[5] = c; m[6] = s; m[9] = -s; m[10] = c; return m; },
+  Ry(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m; },
+  Rz(a) { const m = M.id(), c = Math.cos(a), s = Math.sin(a); m[0] = c; m[1] = s; m[4] = -s; m[5] = c; return m; },
+  chain(...ms) { return ms.reduce((acc, m) => M.mul(acc, m)); },
+  persp(fov, asp, n, f) { const t = 1 / Math.tan(fov / 2), m = new Float32Array(16);
+    m[0] = t / asp; m[5] = t; m[10] = (f + n) / (n - f); m[11] = -1; m[14] = 2 * f * n / (n - f); return m; },
+  mirar(e, c) { // cámara en e mirando a c
+    let z = [e[0] - c[0], e[1] - c[1], e[2] - c[2]]; let L = Math.hypot(...z); z = z.map(v => v / L);
+    let x = [z[2], 0, -z[0]]; L = Math.hypot(...x); x = x.map(v => v / L);            // up = (0,1,0)
+    const y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    const d = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    return new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -d(x, e), -d(y, e), -d(z, e), 1]);
+  }
+};
+
+// ---------- WebGL ----------
+const lienzo = $("lienzo");
+let gl, prog, U = {}, CAJA;
+const CIELO = [0.50, 0.72, 0.90];
+function iniciarGL() {
+  gl = lienzo.getContext("webgl2", { antialias: true });
+  if (!gl) throw new Error("Sin WebGL2");
+  const vs = ["#version 300 es",
+    "in vec3 aPos; in vec3 aNor;",
+    "uniform mat4 uP, uV, uM;",
+    "out vec3 vN; out float vD;",
+    "void main(){ vN = mat3(uM) * aNor; vec4 p = uV * uM * vec4(aPos, 1.0); vD = -p.z; gl_Position = uP * p; }"].join("\n");
+  const fs = ["#version 300 es",
+    "precision mediump float;",
+    "in vec3 vN; in float vD; uniform vec3 uC; uniform vec3 uE; uniform vec3 uF; out vec4 o;",
+    "void main(){",
+    "  vec3 n = normalize(vN);",
+    "  float d = max(dot(n, normalize(vec3(0.35, 1.0, 0.45))), 0.0);",
+    "  vec3 c = uC * (0.5 + 0.6 * d) + uE;",
+    "  float f = clamp((vD - 60.0) / 120.0, 0.0, 1.0);",
+    "  o = vec4(mix(c, uF, f), 1.0);",
+    "}"].join("\n");
+  const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
+    if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(prog, 0, "aPos"); gl.bindAttribLocation(prog, 1, "aNor"); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  for (const n of ["uP", "uV", "uM", "uC", "uE", "uF"]) U[n] = gl.getUniformLocation(prog, n);
+  const d = [], caras = [
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]], [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
+    [[0, -1, 0], [1, 0, 0], [0, 0, 1]], [[0, 0, 1], [1, 0, 0], [0, 1, 0]], [[0, 0, -1], [0, 1, 0], [1, 0, 0]]];
+  for (const [n, u, v] of caras) {
+    const p = (a, b) => [0, 1, 2].map(i => n[i] * 0.5 + u[i] * a * 0.5 + v[i] * b * 0.5);
+    for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]]) d.push(...p(a, b), ...n);
+  }
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(d), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+  CAJA = { vao, n: d.length / 6 };
+}
+function caja(m, color, emis) {
+  gl.uniformMatrix4fv(U.uM, false, m); gl.uniform3fv(U.uC, color); gl.uniform3fv(U.uE, emis || [0, 0, 0]);
+  gl.drawArrays(gl.TRIANGLES, 0, CAJA.n);
+}
+
+// ---------- Sonido sintetizado ----------
+let audio = null, ruido = null, motor = null;
+function iniciarAudio() {
+  if (audio) { audio.resume(); return; }
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    ruido = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
+    const ch = ruido.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    const o = audio.createOscillator(); o.type = "sawtooth"; o.frequency.value = 62;
+    const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 280;
+    const g = audio.createGain(); g.gain.value = 0;
+    o.connect(f).connect(g).connect(audio.destination); o.start();
+    motor = { o, g };
+  } catch (e) { audio = null; }
+}
+function env(g, t0, pico, ataque, dur) { g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(pico, t0 + ataque); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur); }
+function golpeRuido(frec, pico, dur, final) {
+  if (!audio) return; const t = audio.currentTime;
+  const s = audio.createBufferSource(); s.buffer = ruido;
+  const f = audio.createBiquadFilter(); f.type = "lowpass"; f.frequency.setValueAtTime(frec, t); if (final) f.frequency.exponentialRampToValueAtTime(final, t + dur);
+  const g = audio.createGain(); env(g, t, pico, 0.005, dur); s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + dur + 0.05);
+}
+function tono(tipo, f0, f1, pico, dur, retraso) {
+  if (!audio) return; const t = audio.currentTime + (retraso || 0);
+  const o = audio.createOscillator(); o.type = tipo; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = audio.createGain(); env(g, t, pico, 0.005, dur); o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur + 0.05);
+}
+const SND = {
+  disparo() { golpeRuido(3500, 0.25, 0.07); tono("square", 900, 300, 0.06, 0.06); },
+  enemigoDispara() { tono("sawtooth", 700, 180, 0.08, 0.25); },
+  impacto() { tono("square", 300, 90, 0.15, 0.1); },
+  explosion(grande) { golpeRuido(grande ? 1600 : 1300, grande ? 1.0 : 0.7, grande ? 2.0 : 0.9, 80); tono("sine", grande ? 70 : 110, 25, grande ? 1 : 0.6, grande ? 1.4 : 0.6); },
+  herido() { golpeRuido(500, 0.9, 0.5, 60); tono("square", 200, 60, 0.3, 0.4); },
+  corazon() { [660, 880, 1320].forEach((f, i) => tono("triangle", f, f, 0.3, 0.18, i * 0.1)); },
+  fanfarria(ok) { (ok ? [523, 659, 784, 1047] : [392, 330, 262, 196]).forEach((f, i) => tono("triangle", f, f * 1.001, 0.35, 0.45, i * 0.18)); }
+};
+
+// ---------- Voz ----------
+let vozES = null;
+function cargarVoces() { try { const v = speechSynthesis.getVoices(); vozES = v.find(x => x.lang === "es-ES") || v.find(x => x.lang && x.lang.startsWith("es")) || null; } catch (e) {} }
+if ("speechSynthesis" in window) { cargarVoces(); speechSynthesis.onvoiceschanged = cargarVoces; }
+function decir(t, cortar) {
+  UI.mensaje.textContent = t;
+  try { if (cortar) speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.lang = "es-ES"; if (vozES) u.voice = vozES; u.rate = 1.05; speechSynthesis.speak(u); } catch (e) {}
+}
+function vibrar(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
+
+// ---------- Sensores: inclinar el móvil ----------
+const sensor = { g: [0, 0, 9.8], neutro: null, recibido: false, teclas: {} };
+addEventListener("devicemotion", e => {
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
+  sensor.g = [a.x, a.y, a.z]; sensor.recibido = true;
+});
+function gravedadPantalla() { // gravedad en coordenadas de la pantalla (tenga el giro que tenga)
+  const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
+  const [x, y] = sensor.g, c = Math.cos(ang), s = Math.sin(ang);
+  return [x * c + y * s, -x * s + y * c];
+}
+function calibrar() { sensor.neutro = gravedadPantalla(); }
+function mando() { // devuelve [-1..1, -1..1]
+  if (PRUEBA || !sensor.recibido) {
+    const k = sensor.teclas;
+    return [(k.ArrowRight ? 1 : 0) - (k.ArrowLeft ? 1 : 0), (k.ArrowUp ? 1 : 0) - (k.ArrowDown ? 1 : 0)];
+  }
+  if (!sensor.neutro) calibrar();
+  const [sx, sy] = gravedadPantalla();
+  const zona = v => Math.abs(v) < 0.08 ? 0 : v;   // pequeña zona muerta para que no tiemble
+  return [zona(limitar(-(sx - sensor.neutro[0]) / AJUSTES.sensibilidad, -1, 1)),
+          zona(limitar((sy - sensor.neutro[1]) / AJUSTES.sensibilidad, -1, 1))];
+}
+addEventListener("keydown", e => { sensor.teclas[e.key] = true; if (e.key === " ") disparando = true; });
+addEventListener("keyup", e => { sensor.teclas[e.key] = false; if (e.key === " ") disparando = false; });
+
+// ---------- Estado del juego ----------
+const J = {
+  estado: "inicio",   // inicio | despegue | jugando | entre | derribado | fin
+  t: 0, x: 0, y: 0, vx: 0, vy: 0, vidas: AJUSTES.vidasMax, inmune: 0,
+  oleada: 1, porSalir: 0, reloj: 0, jefe: null, puntos: 0,
+  enemigos: [], balas: [], balasEnemigas: [], particulas: [], explosiones: [], corazones: [],
+  nubes: [], suelo: 0, temporizadores: [], helice: 0
+};
+let disparando = false, relojDisparo = 0;
+function despues(s, fn) { J.temporizadores.push({ t: J.t + s, fn }); }
+function hud() {
+  UI.vidas.textContent = "❤".repeat(J.vidas) + "♡".repeat(AJUSTES.vidasMax - J.vidas);
+  UI.oleada.textContent = "Oleada " + J.oleada + "/" + AJUSTES.oleadas;
+  UI.puntos.textContent = J.puntos;
+  UI.jefeBarra.classList.toggle("oculto", !J.jefe);
+  if (J.jefe) UI.jefeVida.style.width = (100 * J.jefe.vida / J.jefe.vidaMax) + "%";
+}
+function pantalla(titulo, texto, boton, transparente) {
+  UI.titulo.textContent = titulo; UI.texto.innerHTML = texto; UI.boton.textContent = boton;
+  UI.pantalla.classList.remove("oculto"); UI.pantalla.classList.toggle("transparente", !!transparente);
+}
+function crearNubes() {
+  J.nubes = [];
+  for (let i = 0; i < 46; i++) {
+    let x, y;
+    do { x = azar(-70, 70); y = azar(-14, 26); } while (Math.abs(x) < 10 && y > -5 && y < 7 && Math.random() < 0.8);
+    const partes = []; const n = 3 + Math.floor(Math.random() * 3);
+    for (let k = 0; k < n; k++) partes.push([azar(-3, 3), azar(-0.6, 0.8), azar(-2, 2), azar(2.5, 5), azar(1.5, 2.8), azar(2.5, 4.5)]);
+    J.nubes.push({ x, y, z: azar(-230, 20), partes });
+  }
+}
+
+// ---------- Flujo de la partida ----------
+function empezarPartida(desdeOleada) {
+  Object.assign(J, { x: 0, y: 0, vx: 0, vy: 0, vidas: AJUSTES.vidasMax, inmune: 2, enemigos: [], balas: [], balasEnemigas: [],
+    particulas: [], explosiones: [], corazones: [], temporizadores: [], jefe: null, estado: "despegue" });
+  if (desdeOleada === 1) J.puntos = 0;
+  UI.pantalla.classList.add("oculto"); UI.hud.classList.remove("oculto"); hud();
+  if (motor) motor.g.gain.setTargetAtTime(0.05, audio.currentTime, 0.5);
+  decir(desdeOleada === 1 ? "¡Despegamos! Inclina el móvil para mover el avión y toca la pantalla para disparar." : "¡Otra vez al aire! Seguimos en la oleada " + desdeOleada + ".", true);
+  despues(PRUEBA ? 1 : 5, () => empezarOleada(desdeOleada));
+}
+function empezarOleada(i) {
+  const o = datosOleada(i);
+  J.oleada = i; J.porSalir = o.n; J.reloj = 1.5; J.estado = "jugando";
+  if (!PRUEBA && sensor.recibido) calibrar();           // vuelve a centrar el mando con la postura actual
+  if (o.jefe) crearJefe(o.jefe);
+  hud();
+  decir(i === 10 ? "Última oleada. ¡Cuidado, viene el avión jefe gigante!" : i === 5 ? "Oleada 5. ¡Viene un avión jefe!" : "Oleada " + i + ". ¡Aviones enemigos a la vista!", true);
+}
+function oleadaTerminada() {
+  if (J.oleada >= AJUSTES.oleadas) { ganar(); return; }
+  J.estado = "entre";
+  decir("¡Oleada " + J.oleada + " superada!" + (J.vidas < AJUSTES.vidasMax ? " Coge el corazón para recuperar vida." : ""), true);
+  if (J.vidas < AJUSTES.vidasMax) J.corazones.push({ x: azar(-4, 4), y: azar(-1.5, 2.5), z: -170, giro: 0 });
+  despues(6, () => empezarOleada(J.oleada + 1));
+}
+function derribado() {
+  J.estado = "derribado"; J.jefe = null;
+  explotar([J.x, J.y, 0], true); vibrar([400, 100, 400]);
+  if (motor) motor.g.gain.setTargetAtTime(0, audio.currentTime, 0.3);
+  SND.fanfarria(false);
+  decir("¡Te han derribado! Pero puedes seguir desde la oleada " + J.oleada + ".", true);
+  setTimeout(() => pantalla("¡DERRIBADO!", "Llevas " + J.puntos + " puntos.", "SEGUIR", true), 1500);
+}
+function ganar() {
+  J.estado = "fin"; J.jefe = null; hud(); SND.fanfarria(true);
+  decir("¡Increíble! Has ganado las diez oleadas y has derribado al avión jefe. ¡Eres el mejor piloto!", true);
+  setTimeout(() => pantalla("¡HAS GANADO!", "¡Eres el mejor piloto!<br>" + J.puntos + " puntos.", "JUGAR OTRA VEZ", true), 1500);
+}
+
+// ---------- Enemigos ----------
+function crearEnemigo() {
+  const o = datosOleada(J.oleada);
+  J.enemigos.push({ x0: azar(-AJUSTES.limiteX, AJUSTES.limiteX), y0: azar(AJUSTES.limiteYAbajo, AJUSTES.limiteYArriba), x: 0, y: 0, z: -190,
+    vel: o.vel * azar(0.9, 1.15), amp: azar(0.5, 3), fr: azar(0.4, 1.2), fase: azar(0, 6), vida: J.oleada >= 7 ? 2 : 1,
+    esc: 1.4, golpe: 0, relojTiro: J.oleada === 1 ? Infinity : azar(0.8, o.disparo), jefe: false }); // oleada 1: no disparan (para aprender)
+}
+function crearJefe(tipo) {
+  const vida = tipo === 2 ? 50 : 20;
+  J.jefe = { x: 0, y: 1, z: -200, x0: 0, y0: 1, vida, vidaMax: vida, esc: tipo === 2 ? 4 : 2.6, golpe: 0, relojTiro: 3, jefe: tipo, llegado: false, t: 0 };
+  J.enemigos.push(J.jefe);
+}
+function enemigoDispara(e) {
+  const n = e.jefe ? (e.jefe === 2 ? 5 : 3) : 1;
+  for (let k = 0; k < n; k++) {
+    const desv = (k - (n - 1) / 2) * 2.2;
+    const obj = [J.x + desv, J.y + (e.jefe ? azar(-1, 1) : 0), 0];
+    const d = [obj[0] - e.x, obj[1] - e.y, obj[2] - e.z], L = Math.hypot(...d), v = e.jefe ? 36 : 30 + J.oleada;
+    J.balasEnemigas.push({ p: [e.x, e.y, e.z + 1.5 * e.esc], v: d.map(c => c / L * v) });
+  }
+  SND.enemigoDispara();
+}
+function explotar(p, grande) {
+  const k = grande ? 2.5 : 1;
+  J.explosiones.push({ p: [...p], t: 0, k });
+  for (let i = 0; i < 26 * k; i++) {
+    const a = azar(0, 6.28), b = azar(-1.2, 1.2), v = azar(6, 16) * Math.sqrt(k);
+    J.particulas.push({ p: [...p], v: [Math.cos(a) * Math.cos(b) * v, Math.sin(b) * v, Math.sin(a) * Math.cos(b) * v], vida: azar(0.4, 0.9),
+      col: [1, 0.5, 0.1], em: Math.random() < 0.5 ? [1, 0.75, 0.2] : [1, 0.35, 0.02], s: azar(0.2, 0.4) * Math.sqrt(k), g: 3 });
+  }
+  for (let i = 0; i < 10 * k; i++) J.particulas.push({ p: [p[0] + azar(-1, 1) * k, p[1] + azar(-1, 1), p[2] + azar(-1, 1)], v: [azar(-1, 1), azar(0.5, 2), azar(-1, 1)],
+    vida: azar(1, 2), col: [0.25, 0.25, 0.27], s: azar(0.4, 0.8) * k, g: -0.5, crece: true });
+  SND.explosion(grande); vibrar(grande ? [250, 60, 300] : 70);
+}
+function chispas(p, col) {
+  for (let i = 0; i < 6; i++) J.particulas.push({ p: [...p], v: [azar(-5, 5), azar(-5, 5), azar(-5, 5)], vida: 0.3, col, em: col, s: 0.15, g: 0 });
+}
+function herir() {
+  if (J.inmune > 0 || J.estado !== "jugando" && J.estado !== "entre") return;
+  J.vidas--; J.inmune = 1.8; hud(); SND.herido(); vibrar([200, 80, 200]);
+  UI.rojo.style.opacity = 1; setTimeout(() => UI.rojo.style.opacity = 0, 300);
+  if (J.vidas <= 0) derribado();
+  else if (J.vidas === 1) decir("¡Cuidado, te queda una vida!");
+}
+
+// ---------- Disparos del jugador (con ayuda de puntería) ----------
+function disparar() {
+  if (J.estado !== "jugando" && J.estado !== "entre") return;
+  let objetivo = null, mejor = 1e9;
+  for (const e of J.enemigos) {
+    if (e.z > -8 || e.z < -170) continue;
+    const dxy = Math.hypot(e.x - J.x, e.y - J.y), cono = 2.2 + Math.abs(e.z) * 0.06 + (e.jefe ? e.esc : 0);
+    if (dxy < cono && dxy < mejor) { mejor = dxy; objetivo = e; }
+  }
+  for (const lado of [-0.95, 0.95]) {
+    const p = [J.x + lado, J.y - 0.05, -1.2]; let v = [0, 0, -150];
+    if (objetivo) { const d = [objetivo.x - p[0], objetivo.y - p[1], objetivo.z - p[2]];
+      const L = Math.hypot(...d); v = d.map(c => c / L * 150); }
+    J.balas.push({ p, v, vida: 1.4 });
+  }
+  SND.disparo();
+}
+function empezarDisparo(e) { if (e) e.preventDefault(); iniciarAudio(); disparando = true; relojDisparo = 0; }
+function pararDisparo() { disparando = false; }
+UI.toque.addEventListener("pointerdown", empezarDisparo);
+addEventListener("pointerup", pararDisparo); addEventListener("pointercancel", pararDisparo);
+
+// ---------- Actualización ----------
+function actualizar(dt) {
+  J.t += dt; J.helice += dt * 40;
+  for (const tm of J.temporizadores.splice(0)) { if (J.t >= tm.t) tm.fn(); else J.temporizadores.push(tm); }
+  const vivo = ["despegue", "jugando", "entre"].includes(J.estado);
+  const velMundo = 32;
+
+  // mover el avión
+  if (vivo) {
+    const [mx, my] = mando();
+    J.vx += (mx * AJUSTES.velocidadAvion - J.vx) * Math.min(1, dt * 6);
+    J.vy += (my * AJUSTES.velocidadAvion * 0.8 - J.vy) * Math.min(1, dt * 6);
+    J.x = limitar(J.x + J.vx * dt, -AJUSTES.limiteX, AJUSTES.limiteX);
+    J.y = limitar(J.y + J.vy * dt, AJUSTES.limiteYAbajo, AJUSTES.limiteYArriba);
+    J.inmune = Math.max(0, J.inmune - dt);
+    if (disparando) { relojDisparo -= dt; if (relojDisparo <= 0) { disparar(); relojDisparo = AJUSTES.cadencia; } }
+    if (motor) motor.o.frequency.setTargetAtTime(62 + J.vy * 2 + Math.abs(J.vx), audio.currentTime, 0.1);
+  }
+
+  // escenario
+  for (const n of J.nubes) { n.z += velMundo * 0.8 * dt; if (n.z > 25) { n.z -= 250; } }
+  J.suelo = (J.suelo + velMundo * dt) % 40;
+
+  // aparición de enemigos
+  if (J.estado === "jugando") {
+    J.reloj -= dt; const o = datosOleada(J.oleada);
+    if (J.porSalir > 0 && J.reloj <= 0) { crearEnemigo(); J.porSalir--; J.reloj = o.cada * azar(0.75, 1.25); }
+    if (J.porSalir === 0 && J.enemigos.length === 0) oleadaTerminada();
+  }
+
+  // enemigos
+  for (const e of J.enemigos) {
+    e.golpe = Math.max(0, e.golpe - dt);
+    if (e.jefe) {
+      e.t += dt;
+      if (!e.llegado) { e.z += 30 * dt; if (e.z >= -55) e.llegado = true; }
+      e.x = Math.sin(e.t * 0.45) * 5; e.y = 1 + Math.sin(e.t * 0.7) * 1.8;
+      if (e.llegado) { e.relojTiro -= dt; if (e.relojTiro <= 0) { enemigoDispara(e); e.relojTiro = e.jefe === 2 ? 1.3 : 1.7; } }
+    } else {
+      e.z += e.vel * dt;
+      e.x = e.x0 + Math.sin(J.t * e.fr + e.fase) * e.amp; e.y = e.y0 + Math.cos(J.t * e.fr * 0.8 + e.fase) * e.amp * 0.4;
+      if (e.z > -120 && e.z < -25) { e.relojTiro -= dt; if (e.relojTiro <= 0 && J.estado === "jugando") { enemigoDispara(e); e.relojTiro = datosOleada(J.oleada).disparo * azar(0.8, 1.3); } }
+      if (vivo && Math.abs(e.z) < 1.8 && Math.abs(e.x - J.x) < 2.4 && Math.abs(e.y - J.y) < 1.3) { e.muerto = true; explotar([e.x, e.y, e.z], false); herir(); }
+      if (e.z > 15) e.muerto = true;      // se ha escapado
+    }
+  }
+
+  // balas del jugador
+  for (const b of J.balas) {
+    for (let i = 0; i < 3; i++) b.p[i] += b.v[i] * dt; b.vida -= dt;
+    for (const e of J.enemigos) {
+      if (e.muerto || b.vida <= 0) continue;
+      const r = e.jefe ? 1.4 * e.esc : 2.0;
+      if (Math.abs(b.p[2] - e.z) < 2.6 + (e.jefe ? e.esc : 0) && Math.hypot(b.p[0] - e.x, b.p[1] - e.y) < r) {
+        b.vida = 0; e.vida--; e.golpe = 0.1; SND.impacto(); chispas(b.p, [1, 0.9, 0.3]);
+        if (e.vida <= 0) {
+          e.muerto = true; explotar([e.x, e.y, e.z], !!e.jefe);
+          J.puntos += e.jefe ? 2000 : 100;
+          if (e.jefe) { J.jefe = null; decir(e.jefe === 2 ? "¡Has derribado al avión jefe gigante!" : "¡Avión jefe derribado!", true); }
+        }
+        hud();
+      }
+    }
+  }
+  J.balas = J.balas.filter(b => b.vida > 0);
+  J.enemigos = J.enemigos.filter(e => !e.muerto);
+
+  // balas enemigas
+  for (const b of J.balasEnemigas) {
+    for (let i = 0; i < 3; i++) b.p[i] += b.v[i] * dt;
+    if (vivo && Math.abs(b.p[2]) < 1.2 && Math.abs(b.p[0] - J.x) < 1.5 && Math.abs(b.p[1] - J.y) < 0.8) { b.fin = true; chispas(b.p, [1, 0.2, 0.1]); herir(); }
+    if (b.p[2] > 12) b.fin = true;
+  }
+  J.balasEnemigas = J.balasEnemigas.filter(b => !b.fin);
+
+  // corazones
+  for (const c of J.corazones) {
+    c.z += velMundo * dt; c.giro += dt * 3;
+    if (vivo && Math.abs(c.z) < 2 && Math.hypot(c.x - J.x, c.y - J.y) < 2.2) { c.fin = true; J.vidas = Math.min(AJUSTES.vidasMax, J.vidas + 1); hud(); SND.corazon(); vibrar(50); decir("¡Vida extra!"); }
+    if (c.z > 12) c.fin = true;
+  }
+  J.corazones = J.corazones.filter(c => !c.fin);
+
+  // partículas y explosiones
+  for (const p of J.particulas) { p.vida -= dt; p.v[1] -= p.g * dt; if (p.crece) p.s += dt * 0.8; for (let i = 0; i < 3; i++) p.p[i] += p.v[i] * dt; p.p[2] += velMundo * 0.3 * dt; }
+  J.particulas = J.particulas.filter(p => p.vida > 0);
+  for (const x of J.explosiones) x.t += dt;
+  J.explosiones = J.explosiones.filter(x => x.t < 0.7);
+}
+
+// ---------- Dibujo ----------
+function dibujarAvion(base, colCuerpo, colAlas, colPunta, emisPunta, golpe) {
+  const e = golpe ? [0.8, 0.8, 0.8] : null;
+  const p = (t, s, col, em) => caja(M.chain(base, M.T(...t), M.S(...s)), col, e || em);
+  p([0, 0, 0], [0.55, 0.55, 2.8], colCuerpo);
+  p([0, 0, -1.55], [0.4, 0.4, 0.4], colPunta, emisPunta);
+  p([0, 0.02, -0.15], [3.6, 0.09, 0.8], colAlas);
+  p([-1.75, 0.02, -0.15], [0.15, 0.11, 0.82], colPunta, emisPunta);
+  p([1.75, 0.02, -0.15], [0.15, 0.11, 0.82], colPunta, emisPunta);
+  p([0, 0.05, 1.2], [1.4, 0.07, 0.45], colAlas);
+  p([0, 0.4, 1.2], [0.08, 0.7, 0.5], colAlas);
+  p([0, 0.36, -0.45], [0.34, 0.26, 0.7], [0.1, 0.15, 0.25], [0.05, 0.12, 0.2]);
+  caja(M.chain(base, M.T(0, 0, -1.8), M.Rz(J.helice), M.S(1.5, 0.12, 0.05)), [0.15, 0.15, 0.15]);
+}
+function dibujarEscena(P, V) {
+  gl.useProgram(prog); gl.bindVertexArray(CAJA.vao);
+  gl.uniformMatrix4fv(U.uP, false, P); gl.uniformMatrix4fv(U.uV, false, V); gl.uniform3fv(U.uF, CIELO);
+  // suelo de campos
+  for (let i = -6; i <= 6; i++) for (let k = 0; k < 7; k++) {
+    const z = -240 + k * 40 + J.suelo, verde = (i + k + Math.floor(-240 / 40)) % 2 === 0;
+    caja(M.chain(M.T(i * 40, -28, z), M.S(40, 0.5, 40)), verde ? [0.35, 0.6, 0.25] : [0.45, 0.68, 0.3]);
+  }
+  // nubes
+  for (const n of J.nubes) for (const q of n.partes) caja(M.chain(M.T(n.x + q[0], n.y + q[1], n.z + q[2]), M.S(q[3], q[4], q[5])), [0.95, 0.96, 1], [0.25, 0.25, 0.25]);
+  // jugador
+  if (["despegue", "jugando", "entre"].includes(J.estado) && !(J.inmune > 0 && Math.floor(J.t * 10) % 2 === 0)) {
+    const base = M.chain(M.T(J.x, J.y, 0), M.Rz(-J.vx * 0.05), M.Rx(J.vy * 0.03));
+    dibujarAvion(base, [0.88, 0.9, 0.95], [0.15, 0.4, 0.9], [0.95, 0.75, 0.1], [0.3, 0.2, 0]);
+  }
+  // enemigos (miran hacia ti)
+  for (const e of J.enemigos) {
+    const base = M.chain(M.T(e.x, e.y, e.z), M.Ry(Math.PI), M.Rz(Math.sin(J.t * 2 + (e.fase || 0)) * 0.3), M.S(e.esc, e.esc, e.esc));
+    if (e.jefe) dibujarAvion(base, [0.2, 0.2, 0.22], [0.12, 0.12, 0.14], [0.9, 0.1, 0.1], [0.7, 0, 0], e.golpe > 0);
+    else dibujarAvion(base, [0.4, 0.45, 0.32], [0.3, 0.35, 0.24], [0.85, 0.12, 0.1], [0.5, 0, 0], e.golpe > 0);
+  }
+  // balas
+  for (const b of J.balas) caja(M.chain(M.T(...b.p), M.S(0.12, 0.12, 1.6)), [1, 1, 0.5], [1, 0.9, 0.3]);
+  for (const b of J.balasEnemigas) caja(M.chain(M.T(...b.p), M.Ry(J.t * 8), M.S(0.45, 0.45, 0.45)), [1, 0.2, 0.1], [1, 0.25, 0.1]);
+  // corazones (dos cajas en V)
+  for (const c of J.corazones) {
+    const b = M.chain(M.T(c.x, c.y, c.z), M.Ry(c.giro));
+    caja(M.chain(b, M.T(-0.35, 0.2, 0), M.Rz(0.6), M.S(0.7, 1.2, 0.5)), [1, 0.1, 0.3], [0.7, 0.05, 0.2]);
+    caja(M.chain(b, M.T(0.35, 0.2, 0), M.Rz(-0.6), M.S(0.7, 1.2, 0.5)), [1, 0.1, 0.3], [0.7, 0.05, 0.2]);
+  }
+  for (const p of J.particulas) caja(M.chain(M.T(...p.p), M.S(p.s, p.s, p.s)), p.col, p.em);
+  for (const x of J.explosiones) {
+    const f = x.t / 0.7, r = x.k * 1.8 * Math.sin(Math.PI * Math.min(1, f * 1.4));
+    if (r > 0.02) {
+      caja(M.chain(M.T(...x.p), M.Ry(x.t * 3), M.S(r, r, r)), [0, 0, 0], [1, 0.85 - f * 0.5, 0.3 - f * 0.3]);
+      caja(M.chain(M.T(...x.p), M.Ry(0.78), M.Rx(0.6), M.S(r * 0.8, r * 0.8, r * 0.8)), [0, 0, 0], [1, 0.4, 0.05]);
+    }
+  }
+}
+let ultimo = 0;
+function fotograma(t) {
+  requestAnimationFrame(fotograma);
+  const dt = ultimo ? Math.min(0.05, (t - ultimo) / 1000) * (window.velocidadPrueba || 1) : 0; ultimo = t;
+  actualizar(dt);
+  const w = lienzo.clientWidth * Math.min(2, devicePixelRatio), h = lienzo.clientHeight * Math.min(2, devicePixelRatio);
+  if (lienzo.width !== w || lienzo.height !== h) { lienzo.width = w; lienzo.height = h; }
+  gl.viewport(0, 0, w, h); gl.clearColor(...CIELO, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  const asp = w / h, fov = asp < 1 ? 1.25 : 0.95;
+  const ojo = [J.x * 0.55, J.y * 0.55 + 2.4, 10], mira = [J.x * 0.75, J.y * 0.75 + 0.6, -20];
+  dibujarEscena(M.persp(fov, asp, 0.3, 400), M.mirar(ojo, mira));
+}
+
+// ---------- Botón grande ----------
+async function alPulsarBoton() {
+  iniciarAudio();
+  if (!PRUEBA) {
+    try { await document.documentElement.requestFullscreen({ navigationUI: "hide" }); } catch (e) {}
+    try { await screen.orientation.lock("landscape"); } catch (e) {}
+  }
+  setTimeout(calibrar, 400);
+  if (J.estado === "inicio" || J.estado === "fin") empezarPartida(1);
+  else if (J.estado === "derribado") empezarPartida(J.oleada);
+}
+UI.boton.addEventListener("click", alPulsarBoton);
+
+iniciarGL(); crearNubes(); requestAnimationFrame(fotograma);
+if (PRUEBA) UI.texto.innerHTML = "Modo prueba en ordenador.<br>Flechas = mover · Espacio = disparar";
+window.juego = { J, AJUSTES, datosOleada, disparar, empezarOleada, sensor, calibrar, gravedadPantalla, mando };
+</script>
+</body>
+</html>
